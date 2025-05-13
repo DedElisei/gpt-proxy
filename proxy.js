@@ -16,19 +16,19 @@ app.post("/chat", async (req, res) => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${apiKey}`
       },
       body: JSON.stringify({
         model: "gpt-4",
-        messages: req.body.messages,
-      }),
+        messages: req.body.messages
+      })
     });
 
     const data = await response.json();
     res.json(data);
   } catch (error) {
     console.error("Ошибка прокси:", error);
-    res.status(500).send("Ошибка при подключении к OpenAI");
+    res.status(500).json({ error: "Ошибка при подключении к OpenAI" });
   }
 });
 
