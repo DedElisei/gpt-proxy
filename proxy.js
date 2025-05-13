@@ -1,32 +1,34 @@
-const express = require("express");
-const cors = require("cors");
-const { Configuration, OpenAIApi } = require("openai");
+import express from "express";
+import cors from "cors";
+import bodyParser from "body-parser";
+import fetch from "node-fetch";
 
 const app = express();
 const port = process.env.PORT || 10000;
+const apiKey = process.env.OPENAI_API_KEY;
 
 app.use(cors());
-app.use(express.json());
-
-const configuration = new Configuration({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-const openai = new OpenAIApi(configuration);
+app.use(bodyParser.json());
 
 app.post("/chat", async (req, res) => {
   try {
-    const { messages } = req.body;
-
-    const completion = await openai.createChatCompletion({
-      model: "gpt-3.5-turbo", // можешь заменить на "gpt-4", если нужен
-      messages,
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-3.5-turbo",
+        messages: req.body.messages,
+      }),
     });
 
-    res.json(completion.data);
+    const data = await response.json();
+    res.json(data);
   } catch (error) {
-    console.error("Ошибка на сервере:", error.message);
-    res.status(500).json({ error: "Ошибка при обращении к OpenAI" });
+    console.error("Ошибка прокси:", error);
+    res.status(500).send("Ошибка при подключении к OpenAI");
   }
 });
 
