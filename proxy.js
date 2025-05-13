@@ -1,44 +1,34 @@
 import express from "express";
-import fetch from "node-fetch";
 import cors from "cors";
-import dotenv from "dotenv";
 
-dotenv.config();
 const app = express();
+const port = process.env.PORT || 10000;
+
 app.use(cors());
 app.use(express.json());
 
-app.post("/chat", async (req, res) => {
-  const userMessage = req.body.message;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
 
+app.post("/v1/chat/completions", async (req, res) => {
   try {
-    const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch(OPENAI_API_URL, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
       },
-      body: JSON.stringify({
-        model: "gpt-4",
-        messages: [{ role: "user", content: userMessage }]
-      })
+      body: JSON.stringify(req.body),
     });
 
-    const data = await openaiRes.json();
-    console.log("Ответ от OpenAI:", data);
-
-    if (!data.choices || !data.choices[0] || !data.choices[0].message) {
-      return res.status(500).json({ error: "Некорректный ответ от OpenAI", data });
-    }
-
-    const reply = data.choices[0].message.content;
-    res.json({ reply });
-
-  } catch (err) {
-    console.error("Ошибка прокси:", err);
-    res.status(500).json({ error: "Ошибка при подключении к OpenAI" });
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error) {
+    console.error("Ошибка на сервере прокси:", error);
+    res.status(500).json({ error: "Прокси не смог получить ответ от OpenAI." });
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Прокси-сервер запущен на порту ${PORT}`));
+app.listen(port, () => {
+  console.log(`Прокси-сервер запущен на порту ${port}`);
+});
