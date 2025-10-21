@@ -4,21 +4,29 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import fetch from "node-fetch";
 
-// ---------- конфиг по умолчанию (можно переопределить переменными среды) ----------
+/* =========================
+   БАЗОВЫЕ НАСТРОЙКИ
+   ========================= */
+
 const PORT = process.env.PORT || 10000;
 
-// Модели можно переопределить через переменные среды MODEL_CHAT / MODEL_AVATAR
-const MODEL_CHAT   = process.env.MODEL_CHAT   || "gpt-3.5-turbo";
-const MODEL_AVATAR = process.env.MODEL_AVATAR || "gpt-3.5-turbo";
+// Дефолтные модели — можно переопределять переменными среды
+// Пример в Render: MODEL_CHAT=gpt-4o-2024-11-20, MODEL_AVATAR=gpt-4o-2024-11-20
+const MODEL_CHAT   = process.env.MODEL_CHAT   || "gpt-4o-2024-11-20";
+const MODEL_AVATAR = process.env.MODEL_AVATAR || "gpt-4o-2024-11-20";
 
-// Достаём ключи: специализированные и общий
-const OPENAI_API_KEY_CHAT   =
+// Ключи: либо раздельные, либо общий OPENAI_API_KEY
+const OPENAI_API_KEY_CHAT =
   process.env.OPENAI_API_KEY_CHAT || process.env.OPENAI_API_KEY || "";
 const OPENAI_API_KEY_AVATAR =
   process.env.OPENAI_API_KEY_AVATAR || process.env.OPENAI_API_KEY || "";
 
-// Общая функция вызова Chat Completions
-async function callOpenAI({ apiKey, model, messages }) {
+/* =========================
+   ХЕЛПЕРЫ
+   ========================= */
+
+// Вызов старого Chat Completions API
+async function callOpenAIChatCompletions({ apiKey, model, messages }) {
   const resp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -46,9 +54,8 @@ async function callOpenAI({ apiKey, model, messages }) {
   return answer;
 }
 
-// Подготовка сообщений из разных форматов входа
+// Собираем messages из запроса
 function buildMessages(req, systemPrompt = "") {
-  // Поддерживаем разные названия полей
   const text =
     req.body?.text ??
     req.body?.message ??
@@ -62,9 +69,7 @@ function buildMessages(req, systemPrompt = "") {
     ? req.body.messages
     : null;
 
-  // Если прислали уже готовый массив messages — используем как есть
   if (incomingMessages && incomingMessages.length > 0) {
-    // На всякий случай, подставим system в начало
     const msgs = [];
     if (systemPrompt) msgs.push({ role: "system", content: systemPrompt });
     for (const m of incomingMessages) {
@@ -73,65 +78,59 @@ function buildMessages(req, systemPrompt = "") {
     return msgs;
   }
 
-  // Иначе соберём простейший контекст system+user
   const msgs = [];
   if (systemPrompt) msgs.push({ role: "system", content: systemPrompt });
   if (text) msgs.push({ role: "user", content: text });
   return msgs;
 }
 
+/* =========================
+   СЕРВЕР
+   ========================= */
+
 const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: "2mb" }));
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// Простейшая проверка
+// Health
 app.get("/", (req, res) => {
   res.send("GPT proxy is running");
 });
 
-// ---------- Маршрут для обычного чата ----------
+/* -------------------------------------------------
+   1) Универсальные удобные маршруты /chat и /avatar
+   ------------------------------------------------- */
+
 app.post("/chat", async (req, res) => {
   try {
     if (!OPENAI_API_KEY_CHAT) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY (CHAT)" });
     }
-
-    // При желании можно задать системный промпт для чата:
     const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT_CHAT || "";
-
     const messages = buildMessages(req, SYSTEM_PROMPT);
     if (messages.length === 0) {
       return res.status(400).json({ error: "Empty input" });
     }
 
-    const answer = await callOpenAI({
+    const answer = await callOpenAIChatCompletions({
       apiKey: OPENAI_API_KEY_CHAT,
       model: MODEL_CHAT,
       messages,
     });
 
-    // Универсальный ответ — разные ключи на выбор
-    res.json({
-      ok: true,
-      text: answer,
-      response: answer,
-      answer,
-    });
+    res.json({ ok: true, text: answer, response: answer, answer });
   } catch (err) {
     console.error("CHAT error:", err);
     res.status(500).json({ error: String(err?.message || err) });
   }
 });
 
-// ---------- Маршрут для «говорящей головы» ----------
 app.post("/avatar", async (req, res) => {
   try {
     if (!OPENAI_API_KEY_AVATAR) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY (AVATAR)" });
     }
-
-    // Системный промпт для аватара (можно настроить в Render)
     const SYSTEM_PROMPT =
       process.env.SYSTEM_PROMPT_AVATAR ||
       "Ты дружелюбный и краткий AI-ассистент. Отвечай живо и ёмко, без лишних прелюдий.";
@@ -141,24 +140,66 @@ app.post("/avatar", async (req, res) => {
       return res.status(400).json({ error: "Empty input" });
     }
 
-    const answer = await callOpenAI({
+    const answer = await callOpenAIChatCompletions({
       apiKey: OPENAI_API_KEY_AVATAR,
       model: MODEL_AVATAR,
       messages,
     });
 
-    // Возвращаем в нескольких полях — чтобы в HeyGen можно было выбрать любое
-    res.json({
-      ok: true,
-      text: answer,       // чаще всего HeyGen удобно читать это поле
-      response: answer,   // альтернативные ключи на выбор
-      answer,
-    });
+    res.json({ ok: true, text: answer, response: answer, answer });
   } catch (err) {
     console.error("AVATAR error:", err);
     res.status(500).json({ error: String(err?.message || err) });
   }
 });
+
+/* -------------------------------------------------
+   2) Прозрачные реле для нового и старого путей OpenAI
+   ------------------------------------------------- */
+
+// Новый API: /v1/responses  (его сейчас вызывает ваш WordPress-сниппет)
+app.post("/v1/responses", async (req, res) => {
+  try {
+    const upstream = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(req.body),
+    });
+
+    const text = await upstream.text();
+    res.status(upstream.status).type("application/json").send(text);
+  } catch (e) {
+    console.error("PROXY /v1/responses error:", e);
+    res.status(500).json({ code: "proxy_failed", message: e.message || String(e) });
+  }
+});
+
+// Старый путь: /v1/chat/completions  (на всякий случай)
+app.post("/v1/chat/completions", async (req, res) => {
+  try {
+    const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(req.body),
+    });
+
+    const text = await upstream.text();
+    res.status(upstream.status).type("application/json").send(text);
+  } catch (e) {
+    console.error("PROXY /v1/chat/completions error:", e);
+    res.status(500).json({ code: "proxy_failed", message: e.message || String(e) });
+  }
+});
+
+/* =========================
+   START
+   ========================= */
 
 app.listen(PORT, () => {
   console.log(`Proxy server is running on port ${PORT}`);
