@@ -45,12 +45,20 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    // ID ассистента: либо из запроса, либо из переменной окружения
-    const effectiveAssistantId = assistantId || DEFAULT_ASSISTANT_ID;
+    // --------------------------------------------------------------------
+    // Выбираем ID ассистента:
+    // - из запроса,
+    // - или из переменной окружения,
+    // НО если там "asst_TEST" — считаем, что ассистента нет и
+    // работаем в обычном режиме Chat Completions.
+    // --------------------------------------------------------------------
+    const rawAssistantId = assistantId || DEFAULT_ASSISTANT_ID;
+    const effectiveAssistantId =
+      rawAssistantId && rawAssistantId !== "asst_TEST" ? rawAssistantId : null;
 
     let answerText = "";
 
-    // ===== 1. РЕЖИМ ASSISTANTS, если есть ID ассистента =====================
+    // ===== 1. РЕЖИМ ASSISTANTS, если есть настоящий ID ассистента ==========
     if (effectiveAssistantId) {
       const allMessages = Array.isArray(messages) ? messages : [];
 
