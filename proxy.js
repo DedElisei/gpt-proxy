@@ -1,32 +1,41 @@
-// proxy.js — обновлённый GPT-прокси с поддержкой Assistants API
+// proxy.js — GPT-прокси с поддержкой Assistants API и старого Chat Completions
 
 import express from "express";
 import cors from "cors";
 import OpenAI from "openai";
 
 const app = express();
+const PORT = process.env.PORT || 10000;
 
-// Клиент OpenAI, ключ берём из переменных окружения Render
+// --- Клиент OpenAI -----------------------------------------------------------
+
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Ассистент по умолчанию (можно задать в Render: OPENAI_ASSISTANT_ID=asst_...)
+const DEFAULT_ASSISTANT_ID = process.env.OPENAI_ASSISTANT_ID || null;
+
+// --- Middleware --------------------------------------------------------------
+
 app.use(cors());
 app.use(express.json());
 
-// Проверка, что сервер жив
+// --- Health-check -----------------------------------------------------------
+
 app.get("/", (req, res) => {
   res.send("OK: GPT proxy is alive");
 });
 
-// Главный эндпоинт, к которому стучится плагин / фронтенд
+// --- Главный эндпоинт для чата ----------------------------------------------
+
 app.post("/chat", async (req, res) => {
   try {
     const body = req.body || {};
     const {
       model = "gpt-4o",
       messages = [],
-      assistantId, // сюда плагин будет передавать asst_...
+      assistantId, // плагин может передать сюда asst_...
     } = body;
 
     if (!process.env.OPENAI_API_KEY) {
@@ -36,12 +45,16 @@ app.post("/chat", async (req, res) => {
       });
     }
 
+    // ID ассистента: либо из запроса, либо из переменной окружения
+    const effectiveAssistantId = assistantId || DEFAULT_ASSISTANT_ID;
+
     let answerText = "";
 
-    // ===== 1. РЕЖИМ ASSISTANTS, если передан assistantId =====
-    if (assistantId) {
-      // Берём последнее пользовательское сообщение из массива messages
+    // ===== 1. РЕЖИМ ASSISTANTS, если есть ID ассистента =====================
+    if (effectiveAssistantId) {
       const allMessages = Array.isArray(messages) ? messages : [];
+
+      // Берём последнее user-сообщение
       const lastUser = [...allMessages].reverse().find(m => m.role === "user");
       const userContent =
         (lastUser && typeof lastUser.content === "string"
@@ -52,18 +65,18 @@ app.post("/chat", async (req, res) => {
         throw new Error("Нет пользовательского текста для ассистента.");
       }
 
-      // 1) Создаём новый thread
+      // 1) Создаём thread
       const thread = await client.beta.threads.create();
 
-      // 2) Добавляем в него сообщение пользователя
+      // 2) Добавляем сообщение пользователя
       await client.beta.threads.messages.create(thread.id, {
         role: "user",
         content: userContent,
       });
 
-      // 3) Запускаем run для указанного ассистента
+      // 3) Запускаем run для ассистента
       let run = await client.beta.threads.runs.create(thread.id, {
-        assistant_id: assistantId,
+        assistant_id: effectiveAssistantId,
       });
 
       // 4) Ждём завершения run
@@ -100,7 +113,7 @@ app.post("/chat", async (req, res) => {
 
       answerText = textParts.join("\n").trim();
     } else {
-      // ===== 2. СТАРЫЙ РЕЖИМ: Chat Completions, если assistantId не передан =====
+      // ===== 2. СТАРЫЙ РЕЖИМ: Chat Completions ==============================
       const completion = await client.chat.completions.create({
         model,
         messages,
@@ -115,7 +128,7 @@ app.post("/chat", async (req, res) => {
       answerText = "Извини, я не смог сформировать ответ.";
     }
 
-    // Формат ответа оставляем прежним, чтобы плагин и старый код работали как раньше
+    // Формат ответа оставляем прежним для совместимости
     res.json({
       ok: true,
       text: answerText,
@@ -131,8 +144,10 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// Запуск сервера
-const PORT = process.env.PORT || 10000;
+// --- Запуск сервера ---------------------------------------------------------
+
 app.listen(PORT, () => {
   console.log(`GPT proxy listening on port ${PORT}`);
 });
+
+export default app;
