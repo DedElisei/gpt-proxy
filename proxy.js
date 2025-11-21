@@ -5,6 +5,7 @@
 //
 // Требуемые ENV:
 //   OPENAI_API_KEY (обязателен)
+//
 // Необязательно (если захочешь развести ключ/модель для блога):
 //   OPENAI_API_KEY_BLOG, MODEL_BLOG
 //
@@ -18,7 +19,7 @@ import OpenAI from "openai";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// --- Клиент OpenAI -----------------------------------------------------------
+// --- Клиент OpenAI по умолчанию (для /chat, /avatar и т.п.) -----------------
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
@@ -34,11 +35,12 @@ app.use(express.json({ limit: "1mb" }));
 app.get("/", (req, res) => {
   res.send("OK: GPT proxy is alive");
 });
+
 app.get("/health", (req, res) => {
   res.json({ ok: true, service: "gpt-proxy" });
 });
 
-// --- /chat: главный эндпоинт для чата (НЕ МЕНЯЛ ФОРМАТ ОТВЕТА) --------------
+// --- /chat: главный эндпоинт для чата (ФОРМАТ ОТВЕТА НЕ МЕНЯЛ) --------------
 app.post("/chat", async (req, res) => {
   try {
     const body = req.body || {};
@@ -144,17 +146,20 @@ app.post("/chat", async (req, res) => {
 
     // === Опциональная озвучка (TTS) — возвращаем base64 в поле audio ========
     let audioBase64 = null;
+
     if (voice === true) {
       // Пытаемся сгенерировать речь через TTS-модель OpenAI
       // По умолчанию возьмём gpt-4o-mini-tts, голос alloy
       const ttsModel = tts_model || "gpt-4o-mini-tts";
       const ttsVoice = tts_voice || "alloy";
+
       try {
         const speech = await client.audio.speech.create({
           model: ttsModel,
           voice: ttsVoice,
           input: answerText
         });
+
         // SDK возвращает Readable/Response — получаем base64
         const arrayBuf = await speech.arrayBuffer();
         const buf = Buffer.from(arrayBuf);
@@ -196,11 +201,17 @@ app.post("/blog", async (req, res) => {
 
     const blogModel = process.env.MODEL_BLOG || "gpt-4o";
     const apiKeyForBlog = process.env.OPENAI_API_KEY_BLOG || process.env.OPENAI_API_KEY;
+
     if (!apiKeyForBlog) {
-      return res.status(500).json({ ok: false, error: "OPENAI_API_KEY (или OPENAI_API_KEY_BLOG) отсутствует" });
+      return res.status(500).json({
+        ok: false,
+        error: "OPENAI_API_KEY (или OPENAI_API_KEY_BLOG) отсутствует"
+      });
     }
 
-    // Просим модель вернуть СТРОГИЙ JSON-объект без обёрток.
+    // Отдельный клиент под блог, чтобы можно было использовать другой ключ/модель
+    const blogClient = new OpenAI({ apiKey: apiKeyForBlog });
+
     const systemPrompt = `
 Ты — редактор и копирайтер блога "Дед Елисей".
 Верни СТРОГО один JSON-объект без пояснений и форматирования кода:
@@ -217,8 +228,7 @@ app.post("/blog", async (req, res) => {
 
     const userPrompt = `Тема статьи: "${topic}". Верни строго {"title":"...","content":"..."} без лишнего текста.`;
 
-    // Вызываем Chat Completions у того же клиента (по умолчанию общий ключ)
-    const completion = await client.chat.completions.create({
+    const completion = await blogClient.chat.completions.create({
       model: blogModel,
       messages: [
         { role: "system", content: systemPrompt },
@@ -229,6 +239,7 @@ app.post("/blog", async (req, res) => {
     });
 
     const raw = completion?.choices?.[0]?.message?.content?.trim() || "";
+
     const jsonString = raw
       .replace(/```json/gi, "")
       .replace(/```/g, "")
@@ -245,7 +256,11 @@ app.post("/blog", async (req, res) => {
     }
 
     if (!obj?.title || !obj?.content) {
-      return res.status(502).json({ ok: false, error: "LLM returned non-JSON or missing fields", raw });
+      return res.status(502).json({
+        ok: false,
+        error: "LLM returned non-JSON or missing fields",
+        raw
+      });
     }
 
     // Простая проверка объёма (по словам)
@@ -256,13 +271,21 @@ app.post("/blog", async (req, res) => {
 
     if (wordCount < minWords) {
       // Не ломаем публикацию, но даём подсказку плагину
-      return res.status(200).json({ ok: true, title: obj.title, content: obj.content, note: `short:${wordCount}` });
+      return res.status(200).json({
+        ok: true,
+        title: obj.title,
+        content: obj.content,
+        note: `short:${wordCount}`
+      });
     }
 
     res.json({ ok: true, title: obj.title, content: obj.content });
   } catch (err) {
     console.error("Ошибка в /blog:", err);
-    res.status(500).json({ ok: false, error: err.message || "Внутренняя ошибка сервера" });
+    res.status(500).json({
+      ok: false,
+      error: err.message || "Внутренняя ошибка сервера"
+    });
   }
 });
 
