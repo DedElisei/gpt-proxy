@@ -1,24 +1,4 @@
-// proxy.js — GPT-прокси для Деда Елисея
-// Маршруты:
-//   /chat  — живой ИИ-ассистент на сайте (другой плагин). ФОРМАТ ОТВЕТА НЕ МЕНЯЕМ!
-//   /blog  — генерация статей для WordPress-плагина (отдельный ключ/модель).
-//
-// Нужные переменные окружения (Environment на Render):
-//   OPENAI_API_KEY        — ОБЯЗАТЕЛЬНО, общий ключ.
-//   OPENAI_ASSISTANT_ID   — (опционально) ассистент по умолчанию для /chat.
-//   OPENAI_API_KEY_BLOG   — (опционально) отдельный ключ только для /blog.
-//   MODEL_BLOG            — (опционально) модель для /blog, напр. "gpt-4o-mini".
-//
-// package.json должен быть в режиме type: "module".
-// Пример:
-// {
-//   "type": "module",
-//   "dependencies": {
-//     "express": "^4.19.0",
-//     "cors": "^2.8.5",
-//     "openai": "^4.52.0"
-//   }
-// }
+// proxy.js — GPT-прокси с поддержкой Assistants API, чата и генератора статей
 
 import express from "express";
 import cors from "cors";
@@ -27,72 +7,65 @@ import OpenAI from "openai";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Общий клиент для /chat и всего остального
-if (!process.env.OPENAI_API_KEY) {
-  console.error("ВНИМАНИЕ: OPENAI_API_KEY не задан. Прокси работать не будет.");
-}
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// --- Middleware --------------------------------------------------------------
 
-// Ассистент для /chat по умолчанию (если не передали явный assistantId)
-const DEFAULT_ASSISTANT_ID = process.env.OPENAI_ASSISTANT_ID || null;
-
-// ---------------------------------------------------------------------------
-// Middleware
-// ---------------------------------------------------------------------------
 app.use(cors());
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json());
 
-// ---------------------------------------------------------------------------
-// Health-check
-// ---------------------------------------------------------------------------
+// --- Health-check -----------------------------------------------------------
+
 app.get("/", (req, res) => {
   res.send("OK: GPT proxy is alive");
 });
 
-app.get("/health", (req, res) => {
-  res.json({ ok: true, service: "gpt-proxy" });
-});
+// ============================================================================
+//  /chat — ДЛЯ Ded AI Chat (Assistants + Voice)
+//  Поведение сохранено: Assistants + старый Chat Completions, формат ответа
+//  { ok, text, response, answer }
+// ============================================================================
 
-// ---------------------------------------------------------------------------
-// /chat — главный рабочий эндпоинт для ЖИВОГО чата (другой плагин)
-// ВАЖНО: формат ответа сохраняем, чтобы ничего не сломать.
-// ---------------------------------------------------------------------------
 app.post("/chat", async (req, res) => {
   try {
-    if (!process.env.OPENAI_API_KEY) {
+    const apiKey =
+      process.env.OPENAI_API_KEY_CHAT || process.env.OPENAI_API_KEY;
+
+    if (!apiKey) {
       return res.status(500).json({
         ok: false,
-        error: "На сервере не задан OPENAI_API_KEY",
+        error:
+          "Отсутствует OPENAI_API_KEY_CHAT и OPENAI_API_KEY на сервере.",
       });
     }
+
+    const client = new OpenAI({ apiKey });
 
     const body = req.body || {};
     const {
       model = "gpt-4o",
       messages = [],
-      assistantId,           // может прийти asst_... — тогда используем Assistants API
-      voice = false,         // если true — делаем TTS и возвращаем audio (base64)
-      tts_model,             // опционально, например "gpt-4o-mini-tts"
-      tts_voice              // опционально, например "alloy"
+      assistantId, // плагин может передать сюда asst_...
     } = body;
 
-    let answerText = "";
-
-    // Выбираем ассистента: либо переданный, либо стандартный из ENV
-    const rawAssistantId = assistantId || DEFAULT_ASSISTANT_ID;
+    // --------------------------------------------------------------------
+    // Выбираем ID ассистента:
+    // - из запроса,
+    // - или из переменной окружения OPENAI_ASSISTANT_ID.
+    // Если значение "asst_TEST" — считаем, что ассистента нет
+    // и работаем в обычном режиме Chat Completions.
+    // --------------------------------------------------------------------
+    const rawAssistantId =
+      assistantId || process.env.OPENAI_ASSISTANT_ID || null;
     const effectiveAssistantId =
       rawAssistantId && rawAssistantId !== "asst_TEST" ? rawAssistantId : null;
 
-    // -----------------------------------------------------------------------
-    // Вариант 1: есть нормальный assistantId → работаем через Assistants API
-    // -----------------------------------------------------------------------
+    let answerText = "";
+
+    // ===== 1. РЕЖИМ ASSISTANTS, если есть настоящий ID ассистента ==========
     if (effectiveAssistantId) {
       const allMessages = Array.isArray(messages) ? messages : [];
-      // Берём последнее user-сообщение (то, что реально сказал пользователь)
-      const lastUser = [...allMessages].reverse().find(m => m.role === "user");
 
+      // Берём последнее user-сообщение
+      const lastUser = [...allMessages].reverse().find((m) => m.role === "user");
       const userContent =
         (lastUser && typeof lastUser.content === "string"
           ? lastUser.content
@@ -111,18 +84,18 @@ app.post("/chat", async (req, res) => {
         content: userContent,
       });
 
-      // 3) Запускаем run
+      // 3) Запускаем run для ассистента
       let run = await client.beta.threads.runs.create(thread.id, {
         assistant_id: effectiveAssistantId,
       });
 
-      // 4) Ждём завершения
+      // 4) Ждём завершения run
       while (
         run.status === "queued" ||
         run.status === "in_progress" ||
         run.status === "cancelling"
       ) {
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise((r) => setTimeout(r, 1000));
         run = await client.beta.threads.runs.retrieve(thread.id, run.id);
       }
 
@@ -136,7 +109,7 @@ app.post("/chat", async (req, res) => {
       });
 
       const assistantMessages = msgList.data.filter(
-        m => m.role === "assistant"
+        (m) => m.role === "assistant"
       );
 
       if (!assistantMessages.length) {
@@ -145,14 +118,12 @@ app.post("/chat", async (req, res) => {
 
       const m = assistantMessages[0]; // самое свежее
       const textParts = (m.content || [])
-        .filter(part => part.type === "text")
-        .map(part => part.text.value);
+        .filter((part) => part.type === "text")
+        .map((part) => part.text.value);
 
       answerText = textParts.join("\n").trim();
     } else {
-      // -------------------------------------------------------------------
-      // Вариант 2: обычный Chat Completions (fallback), без Assistants
-      // -------------------------------------------------------------------
+      // ===== 2. СТАРЫЙ РЕЖИМ: Chat Completions ==============================
       const completion = await client.chat.completions.create({
         model,
         messages,
@@ -167,116 +138,96 @@ app.post("/chat", async (req, res) => {
       answerText = "Извини, я не смог сформировать ответ.";
     }
 
-    // -------------------------------------------------------------------
-    // Опциональная озвучка (TTS): возвращаем audio в base64
-    // -------------------------------------------------------------------
-    let audioBase64 = null;
-
-    if (voice === true) {
-      const ttsModel = tts_model || "gpt-4o-mini-tts";
-      const ttsVoice = tts_voice || "alloy";
-
-      try {
-        const speech = await client.audio.speech.create({
-          model: ttsModel,
-          voice: ttsVoice,
-          input: answerText,
-        });
-
-        const arrayBuf = await speech.arrayBuffer();
-        const buf = Buffer.from(arrayBuf);
-        audioBase64 = buf.toString("base64");
-      } catch (e) {
-        console.error("TTS error:", e?.message || e);
-        audioBase64 = null; // Не роняем основной ответ
-      }
-    }
-
-    // ВАЖНО: структура ответа — как и раньше, чтобы плагин чата не сломался
+    // Формат ответа оставляем прежним для совместимости
     res.json({
       ok: true,
       text: answerText,
       response: answerText,
       answer: answerText,
-      audio: audioBase64,
     });
   } catch (err) {
     console.error("Ошибка в /chat:", err);
     res.status(500).json({
       ok: false,
-      error: err?.message || "Внутренняя ошибка сервера в /chat",
+      error: err.message || "Внутренняя ошибка сервера.",
     });
   }
 });
 
-// ---------------------------------------------------------------------------
-// /blog — специальный эндпоинт для плагина статей WordPress
-// Плагин отправляет model, messages, temperature, max_tokens, response_format.
-// Мы просто прокидываем это в OpenAI и возвращаем только content.
-// ---------------------------------------------------------------------------
+// ============================================================================
+//  /blog — ДЛЯ AI Content Generator (Ded Elisei)
+//  Принимает { model, prompt, api_key? } и возвращает { content: "статья..." }.
+//  Плагин на WordPress менять не нужно — он ждёт именно такое поле "content".
+// ============================================================================
+
 app.post("/blog", async (req, res) => {
   try {
-    const body = req.body || {};
-
-    const apiKeyForBlog =
+    const apiKey =
       process.env.OPENAI_API_KEY_BLOG || process.env.OPENAI_API_KEY;
 
-    if (!apiKeyForBlog) {
+    if (!apiKey) {
       return res.status(500).json({
-        ok: false,
         error:
-          "На сервере не задан ни OPENAI_API_KEY_BLOG, ни OPENAI_API_KEY для /blog",
+          "Отсутствует OPENAI_API_KEY_BLOG и OPENAI_API_KEY на сервере.",
       });
     }
 
-    const blogClient = new OpenAI({ apiKey: apiKeyForBlog });
+    const client = new OpenAI({ apiKey });
 
-    const messages = Array.isArray(body.messages) ? body.messages : [];
-    if (!messages.length) {
-      return res.status(400).json({
-        ok: false,
-        error: "В /blog не передан массив messages[]",
-      });
+    const body = req.body || {};
+    const {
+      model = "gpt-4o-mini",
+      prompt = "",
+      temperature = 0.7,
+      max_tokens = 4096,
+    } = body;
+
+    if (!prompt || !prompt.trim()) {
+      return res
+        .status(400)
+        .json({ error: "Пустой prompt для генерации статьи." });
     }
 
-    const model = body.model || process.env.MODEL_BLOG || "gpt-4o-mini";
+    const messages = [
+      {
+        role: "system",
+        content:
+          "Ты опытный копирайтер и SEO-специалист. Пиши подробные, структурированные статьи для владельцев малого и среднего бизнеса на русском языке. Используй подзаголовки h2/h3, списки и логичные абзацы. Не добавляй теги <html>, <head>, <body> — только содержимое статьи.",
+      },
+      {
+        role: "user",
+        content: prompt,
+      },
+    ];
 
-    const completion = await blogClient.chat.completions.create({
+    const completion = await client.chat.completions.create({
       model,
       messages,
-      temperature:
-        typeof body.temperature === "number" ? body.temperature : 0.6,
-      max_tokens:
-        typeof body.max_tokens === "number" ? body.max_tokens : 3500,
-      ...(body.response_format
-        ? { response_format: body.response_format }
-        : {}),
+      temperature,
+      max_tokens,
     });
 
     const content =
       completion.choices?.[0]?.message?.content?.trim() || "";
 
     if (!content) {
-      return res.status(500).json({
-        ok: false,
-        error: "Пустой ответ от OpenAI в /blog",
-      });
+      return res
+        .status(500)
+        .json({ error: "Пустой ответ от OpenAI при генерации статьи." });
     }
 
-    // Плагин ожидает "тело ответа" как одну строку (обычно JSON-объект).
-    res.status(200).send(content);
+    // Возвращаем в формате, который ждёт WP-плагин: поле "content"
+    res.json({ content });
   } catch (err) {
     console.error("Ошибка в /blog:", err);
     res.status(500).json({
-      ok: false,
-      error: err?.message || "Внутренняя ошибка сервера в /blog",
+      error: err.message || "Внутренняя ошибка сервера /blog.",
     });
   }
 });
 
-// ---------------------------------------------------------------------------
-// Запуск сервера
-// ---------------------------------------------------------------------------
+// --- Запуск сервера ---------------------------------------------------------
+
 app.listen(PORT, () => {
   console.log(`GPT proxy listening on port ${PORT}`);
 });
