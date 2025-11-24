@@ -74,28 +74,22 @@ app.post("/chat", async (req, res) => {
     const {
       model = "gpt-4o",
       messages = [],
-      assistantId,   // может прийти asst_... — тогда используем Assistants API
-      voice = false, // если true — делаем TTS и возвращаем audio (base64)
-      tts_model,     // опционально, например "gpt-4o-mini-tts"
-      tts_voice,     // опционально, например "alloy"
+      assistantId,
+      voice = false,
+      tts_model,
+      tts_voice,
     } = body;
 
     let answerText = "";
 
-    // Выбираем ассистента: либо переданный, либо стандартный из ENV
     const rawAssistantId = assistantId || DEFAULT_ASSISTANT_ID;
     const effectiveAssistantId =
       rawAssistantId && rawAssistantId !== "asst_TEST" ? rawAssistantId : null;
 
-    // -----------------------------------------------------------------------
-    // Попытка 1: Assistants API (если задан assistantId)
-    // -----------------------------------------------------------------------
-
+    // ---------- Попытка 1: Assistants API ----------
     if (effectiveAssistantId) {
       try {
         const allMessages = Array.isArray(messages) ? messages : [];
-
-        // Берём последнее user-сообщение
         const lastUser = [...allMessages].reverse().find(m => m.role === "user");
 
         let userContent = "";
@@ -124,26 +118,20 @@ app.post("/chat", async (req, res) => {
         }
 
         userContent = (userContent || "").trim();
-
         if (!userContent) {
           throw new Error("Нет текстового содержимого в последнем сообщении пользователя.");
         }
 
-        // 1) Создаём thread
         const thread = await client.beta.threads.create();
-
-        // 2) Добавляем сообщение пользователя
         await client.beta.threads.messages.create(thread.id, {
           role: "user",
           content: userContent,
         });
 
-        // 3) Запускаем run
         let run = await client.beta.threads.runs.create(thread.id, {
           assistant_id: effectiveAssistantId,
         });
 
-        // 4) Ждём завершения
         while (
           run.status === "queued" ||
           run.status === "in_progress" ||
@@ -157,7 +145,6 @@ app.post("/chat", async (req, res) => {
           throw new Error("Ассистент не завершил ответ. Статус: " + run.status);
         }
 
-        // 5) Забираем последнее сообщение ассистента
         const msgList = await client.beta.threads.messages.list(thread.id, {
           limit: 10,
         });
@@ -170,7 +157,7 @@ app.post("/chat", async (req, res) => {
           throw new Error("Ассистент не вернул сообщений.");
         }
 
-        const m = assistantMessages[0]; // самое свежее
+        const m = assistantMessages[0];
         const textParts = (m.content || [])
           .filter(part => part.type === "text")
           .map(part => part.text.value);
@@ -178,14 +165,11 @@ app.post("/chat", async (req, res) => {
         answerText = textParts.join("\n").trim();
       } catch (e) {
         console.error("Ошибка Assistants API в /chat, выполняем fallback:", e);
-        // Не выбрасываем ошибку дальше — ниже будет обычный Chat Completions
         answerText = "";
       }
     }
 
-    // -------------------------------------------------------------------
-    // Попытка 2: обычный Chat Completions (fallback или основной путь)
-    // -------------------------------------------------------------------
+    // ---------- Попытка 2: Chat Completions ----------
     if (!answerText) {
       const completion = await client.chat.completions.create({
         model,
@@ -201,9 +185,7 @@ app.post("/chat", async (req, res) => {
       answerText = "Извини, я не смог сформировать ответ.";
     }
 
-    // -------------------------------------------------------------------
-    // Опциональная озвучка (TTS): возвращаем audio в base64
-    // -------------------------------------------------------------------
+    // ---------- TTS (по желанию) ----------
     let audioBase64 = null;
 
     if (voice === true) {
@@ -222,11 +204,10 @@ app.post("/chat", async (req, res) => {
         audioBase64 = buf.toString("base64");
       } catch (e) {
         console.error("TTS error:", e?.message || e);
-        audioBase64 = null; // Не роняем основной ответ
+        audioBase64 = null;
       }
     }
 
-    // ВАЖНО: структура ответа — как и раньше, чтобы плагин чата не сломался
     res.json({
       ok: true,
       text: answerText,
@@ -244,17 +225,17 @@ app.post("/chat", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// /blog — эндпоинт для генерации статей (WordPress-плагин AI Content Generator)
+// /blog — генерация статей (WordPress-плагин)
 //
-// Плагин может отправлять:
-//   вариант 1 (как старый рабочий плагин): { model, messages }
-//   вариант 2 (упрощённый):               { model, prompt }
+// Плагин может прислать:
+//   1) { model, messages }
+//   2) { model, prompt }
 //
-// Мы:
-//   1) Пытаемся взять messages из тела запроса;
-//   2) Если messages нет, но есть prompt — заворачиваем его в messages;
-//   3) Если нет ни messages, ни prompt — возвращаем 400;
-//   4) Вызываем OpenAI и возвращаем { content: "текст статьи..." }.
+// Прокси:
+//   – формирует messages,
+//   – вызывает OpenAI,
+//   – если ответ похож на JSON (с или без ```json), достаёт из него поле
+//     "content" и отдаёт только чистый текст статьи.
 // ---------------------------------------------------------------------------
 
 app.post("/blog", async (req, res) => {
@@ -273,10 +254,9 @@ app.post("/blog", async (req, res) => {
     }
 
     const blogClient = new OpenAI({ apiKey: apiKeyForBlog });
-
     const model = body.model || process.env.MODEL_BLOG || "gpt-4o-mini";
 
-    // 1. Пытаемся взять messages (как делал старый плагин через /chat)
+    // 1. messages из тела запроса (как в старом варианте)
     let messages = Array.isArray(body.messages) ? body.messages : null;
 
     // 2. Если messages нет, пробуем собрать их из prompt
@@ -294,7 +274,6 @@ app.post("/blog", async (req, res) => {
       }
     }
 
-    // 3. Если у нас до сих пор нет messages — реально нечего отправлять в OpenAI
     if (!messages || messages.length === 0) {
       return res.status(400).json({
         ok: false,
@@ -312,7 +291,7 @@ app.post("/blog", async (req, res) => {
         typeof body.max_tokens === "number" ? body.max_tokens : 3500,
     });
 
-    const content =
+    let content =
       completion.choices?.[0]?.message?.content?.trim() || "";
 
     if (!content) {
@@ -322,7 +301,37 @@ app.post("/blog", async (req, res) => {
       });
     }
 
-    // Плагин ожидает JSON с полем "content"
+    // ---------- Удаляем возможный JSON/```json и берём только article ----------
+    try {
+      let jsonCandidate = content.trim();
+
+      // Если ответ обёрнут в ```json ... ``` — вырезаем обёртку
+      if (jsonCandidate.startsWith("```")) {
+        const firstNewline = jsonCandidate.indexOf("\n");
+        const lastFence = jsonCandidate.lastIndexOf("```");
+        if (firstNewline !== -1 && lastFence !== -1 && lastFence > firstNewline) {
+          jsonCandidate = jsonCandidate
+            .slice(firstNewline + 1, lastFence)
+            .trim();
+        }
+      }
+
+      // Пытаемся распарсить как JSON
+      const parsed = JSON.parse(jsonCandidate);
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        typeof parsed.content === "string" &&
+        parsed.content.trim()
+      ) {
+        content = parsed.content.trim();
+      }
+      // Если парсинг не удался — просто остаётся исходный content
+    } catch (e) {
+      // Тихо игнорируем — значит это был обычный текст статьи
+    }
+
+    // Отдаём только чистый текст
     res.status(200).json({ content });
   } catch (err) {
     console.error("Ошибка в /blog:", err);
