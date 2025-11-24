@@ -89,8 +89,6 @@ app.post("/chat", async (req, res) => {
 
     // -----------------------------------------------------------------------
     // Попытка 1: Assistants API (если задан assistantId)
-    // Если что-то пойдёт не так — тихо логируем и ниже делаем fallback
-    // на обычный Chat Completions.
     // -----------------------------------------------------------------------
 
     if (effectiveAssistantId) {
@@ -106,13 +104,10 @@ app.post("/chat", async (req, res) => {
           const c = lastUser.content;
 
           if (typeof c === "string") {
-            // Обычная строка
             userContent = c;
           } else if (Array.isArray(c)) {
-            // Массив частей (текст + файлы и т.п.)
             userContent = c
               .map(part => {
-                // Возможные варианты структуры
                 if (typeof part === "string") return part;
                 if (part && typeof part.text === "string") return part.text;
                 if (part && typeof part.value === "string") return part.value;
@@ -124,7 +119,6 @@ app.post("/chat", async (req, res) => {
               .filter(Boolean)
               .join("\n");
           } else if (c && typeof c === "object" && typeof c.text === "string") {
-            // Объект с полем text
             userContent = c.text;
           }
         }
@@ -252,12 +246,15 @@ app.post("/chat", async (req, res) => {
 // ---------------------------------------------------------------------------
 // /blog — эндпоинт для генерации статей (WordPress-плагин AI Content Generator)
 //
-// Плагин сейчас отправляет: { model, prompt, api_key? }
+// Плагин может отправлять:
+//   вариант 1 (как старый рабочий плагин): { model, messages }
+//   вариант 2 (упрощённый):               { model, prompt }
+//
 // Мы:
-//   1) Берём model и prompt,
-//   2) Делаем messages[],
-//   3) Вызываем OpenAI,
-//   4) Возвращаем JSON { content: "текст статьи..." }.
+//   1) Пытаемся взять messages из тела запроса;
+//   2) Если messages нет, но есть prompt — заворачиваем его в messages;
+//   3) Если нет ни messages, ни prompt — возвращаем 400;
+//   4) Вызываем OpenAI и возвращаем { content: "текст статьи..." }.
 // ---------------------------------------------------------------------------
 
 app.post("/blog", async (req, res) => {
@@ -277,27 +274,34 @@ app.post("/blog", async (req, res) => {
 
     const blogClient = new OpenAI({ apiKey: apiKeyForBlog });
 
-    const prompt = typeof body.prompt === "string" ? body.prompt : "";
     const model = body.model || process.env.MODEL_BLOG || "gpt-4o-mini";
 
-    if (!prompt.trim()) {
-      return res.status(400).json({
-        ok: false,
-        error: "В /blog не передан prompt для генерации статьи.",
-      });
+    // 1. Пытаемся взять messages (как делал старый плагин через /chat)
+    let messages = Array.isArray(body.messages) ? body.messages : null;
+
+    // 2. Если messages нет, пробуем собрать их из prompt
+    if (!messages || messages.length === 0) {
+      const prompt =
+        typeof body.prompt === "string" ? body.prompt.trim() : "";
+
+      if (prompt) {
+        messages = [
+          {
+            role: "user",
+            content: prompt,
+          },
+        ];
+      }
     }
 
-    const messages = [
-      {
-        role: "system",
-        content:
-          "Ты опытный копирайтер и SEO-специалист. Пиши подробные, структурированные статьи для владельцев малого и среднего бизнеса на русском языке. Используй подзаголовки h2/h3, списки и логичные абзацы. Не добавляй теги <html>, <head>, <body> — только содержимое статьи.",
-      },
-      {
-        role: "user",
-        content: prompt,
-      },
-    ];
+    // 3. Если у нас до сих пор нет messages — реально нечего отправлять в OpenAI
+    if (!messages || messages.length === 0) {
+      return res.status(400).json({
+        ok: false,
+        error:
+          "В /blog не переданы данные для генерации статьи (нет ни messages, ни prompt).",
+      });
+    }
 
     const completion = await blogClient.chat.completions.create({
       model,
