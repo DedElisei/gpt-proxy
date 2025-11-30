@@ -235,6 +235,8 @@ app.post("/chat", async (req, res) => {
 // /school — Учитель AI-школы Деда Елисея (новый маршрут)
 // Тут мы поддерживаем несколько вариантов тела запроса,
 // чтобы не зависеть от версии плагина.
+// ВАЖНО: теперь в Assistants API передаётся ВЕСЬ диалог, а не только
+// последнее сообщение пользователя.
 // ---------------------------------------------------------------------------
 
 app.post("/school", async (req, res) => {
@@ -289,51 +291,59 @@ app.post("/school", async (req, res) => {
 
     let answerText = "";
 
+    // Небольшой помощник: вытаскиваем текст из content в разных форматах
+    const extractTextFromContent = (c) => {
+      if (typeof c === "string") return c;
+      if (Array.isArray(c)) {
+        return c
+          .map(part => {
+            if (typeof part === "string") return part;
+            if (part && typeof part.text === "string") return part.text;
+            if (part && typeof part.value === "string") return part.value;
+            if (part && part.type === "input_text" && typeof part.text === "string") {
+              return part.text;
+            }
+            return "";
+          })
+          .filter(Boolean)
+          .join("\n");
+      }
+      if (c && typeof c === "object" && typeof c.text === "string") {
+        return c.text;
+      }
+      return "";
+    };
+
     // ---------- Попытка 1: Assistants API (если есть ассистент) ----------
     if (effectiveAssistantId) {
       try {
         const allMessages = Array.isArray(messages) ? messages : [];
 
-        // Берём последнее user-сообщение
-        const lastUser = [...allMessages].reverse().find(m => m.role === "user");
-
-        let userContent = "";
-
-        if (lastUser) {
-          const c = lastUser.content;
-
-          if (typeof c === "string") {
-            userContent = c;
-          } else if (Array.isArray(c)) {
-            userContent = c
-              .map(part => {
-                if (typeof part === "string") return part;
-                if (part && typeof part.text === "string") return part.text;
-                if (part && typeof part.value === "string") return part.value;
-                if (part && part.type === "input_text" && typeof part.text === "string") {
-                  return part.text;
-                }
-                return "";
-              })
-              .filter(Boolean)
-              .join("\n");
-          } else if (c && typeof c === "object" && typeof c.text === "string") {
-            userContent = c.text;
-          }
-        }
-
-        userContent = (userContent || "").trim();
-
-        if (!userContent) {
-          throw new Error("Нет текстового содержимого в последнем сообщении пользователя.");
-        }
-
         const thread = await client.beta.threads.create();
 
-        await client.beta.threads.messages.create(thread.id, {
-          role: "user",
-          content: userContent,
-        });
+        // Добавляем ВЕСЬ диалог (user + assistant) в новый thread
+        let hasUserMessage = false;
+
+        for (const msg of allMessages) {
+          const role = msg.role === "assistant" ? "assistant" : "user"; // system игнорируем
+          const text = extractTextFromContent(msg.content);
+
+          const trimmed = (text || "").trim();
+          if (!trimmed) continue;
+
+          if (role === "user") {
+            hasUserMessage = true;
+          }
+
+          await client.beta.threads.messages.create(thread.id, {
+            role,
+            content: trimmed,
+          });
+        }
+
+        if (!hasUserMessage) {
+          throw new Error("В истории /school нет ни одного сообщения пользователя.");
+        }
 
         let run = await client.beta.threads.runs.create(thread.id, {
           assistant_id: effectiveAssistantId,
