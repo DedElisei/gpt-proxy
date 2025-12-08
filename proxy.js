@@ -94,22 +94,24 @@ app.post("/chat", async (req, res) => {
         const allMessages = Array.isArray(messages) ? messages : [];
 
         // Берём последнее user-сообщение
-        const lastUser = [...allMessages].reverse().find(m => m.role === "user");
-
+        const lastUser = [...allMessages].reverse().find((m) => m.role === "user");
         let userContent = "";
 
         if (lastUser) {
           const c = lastUser.content;
-
           if (typeof c === "string") {
             userContent = c;
           } else if (Array.isArray(c)) {
             userContent = c
-              .map(part => {
+              .map((part) => {
                 if (typeof part === "string") return part;
                 if (part && typeof part.text === "string") return part.text;
                 if (part && typeof part.value === "string") return part.value;
-                if (part && part.type === "input_text" && typeof part.text === "string") {
+                if (
+                  part &&
+                  part.type === "input_text" &&
+                  typeof part.text === "string"
+                ) {
                   return part.text;
                 }
                 return "";
@@ -122,7 +124,6 @@ app.post("/chat", async (req, res) => {
         }
 
         userContent = (userContent || "").trim();
-
         if (!userContent) {
           throw new Error("Нет текстового содержимого в последнем сообщении пользователя.");
         }
@@ -143,7 +144,7 @@ app.post("/chat", async (req, res) => {
           run.status === "in_progress" ||
           run.status === "cancelling"
         ) {
-          await new Promise(r => setTimeout(r, 1000));
+          await new Promise((r) => setTimeout(r, 1000));
           run = await client.beta.threads.runs.retrieve(thread.id, run.id);
         }
 
@@ -156,17 +157,16 @@ app.post("/chat", async (req, res) => {
         });
 
         const assistantMessages = msgList.data.filter(
-          m => m.role === "assistant"
+          (m) => m.role === "assistant"
         );
-
         if (!assistantMessages.length) {
           throw new Error("Ассистент не вернул сообщений.");
         }
 
         const m = assistantMessages[0];
         const textParts = (m.content || [])
-          .filter(part => part.type === "text")
-          .map(part => part.text.value);
+          .filter((part) => part.type === "text")
+          .map((part) => part.text.value);
 
         answerText = textParts.join("\n").trim();
       } catch (e) {
@@ -193,7 +193,6 @@ app.post("/chat", async (req, res) => {
 
     // ---------- TTS (по желанию) ----------
     let audioBase64 = null;
-
     if (voice === true) {
       const ttsModel = tts_model || "gpt-4o-mini-tts";
       const ttsVoice = tts_voice || "alloy";
@@ -259,9 +258,7 @@ app.post("/school", async (req, res) => {
     } = body;
 
     // Ассистент: поддерживаем и assistantId, и assistant_id
-    const rawAssistantId =
-      body.assistantId || body.assistant_id || null;
-
+    const rawAssistantId = body.assistantId || body.assistant_id || null;
     const effectiveAssistantId =
       rawAssistantId && rawAssistantId !== "asst_TEST" ? rawAssistantId : null;
 
@@ -296,11 +293,15 @@ app.post("/school", async (req, res) => {
       if (typeof c === "string") return c;
       if (Array.isArray(c)) {
         return c
-          .map(part => {
+          .map((part) => {
             if (typeof part === "string") return part;
             if (part && typeof part.text === "string") return part.text;
             if (part && typeof part.value === "string") return part.value;
-            if (part && part.type === "input_text" && typeof part.text === "string") {
+            if (
+              part &&
+              part.type === "input_text" &&
+              typeof part.text === "string"
+            ) {
               return part.text;
             }
             return "";
@@ -318,7 +319,6 @@ app.post("/school", async (req, res) => {
     if (effectiveAssistantId) {
       try {
         const allMessages = Array.isArray(messages) ? messages : [];
-
         const thread = await client.beta.threads.create();
 
         // Добавляем ВЕСЬ диалог (user + assistant) в новый thread
@@ -327,7 +327,6 @@ app.post("/school", async (req, res) => {
         for (const msg of allMessages) {
           const role = msg.role === "assistant" ? "assistant" : "user"; // system игнорируем
           const text = extractTextFromContent(msg.content);
-
           const trimmed = (text || "").trim();
           if (!trimmed) continue;
 
@@ -354,7 +353,7 @@ app.post("/school", async (req, res) => {
           run.status === "in_progress" ||
           run.status === "cancelling"
         ) {
-          await new Promise(r => setTimeout(r, 1000));
+          await new Promise((r) => setTimeout(r, 1000));
           run = await client.beta.threads.runs.retrieve(thread.id, run.id);
         }
 
@@ -367,17 +366,16 @@ app.post("/school", async (req, res) => {
         });
 
         const assistantMessages = msgList.data.filter(
-          m => m.role === "assistant"
+          (m) => m.role === "assistant"
         );
-
         if (!assistantMessages.length) {
           throw new Error("Ассистент не вернул сообщений.");
         }
 
         const m = assistantMessages[0];
         const textParts = (m.content || [])
-          .filter(part => part.type === "text")
-          .map(part => part.text.value);
+          .filter((part) => part.type === "text")
+          .map((part) => part.text.value);
 
         answerText = textParts.join("\n").trim();
       } catch (e) {
@@ -443,7 +441,8 @@ app.post("/school", async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // /blog — эндпоинт для генерации статей (WordPress-плагин AI Content Generator)
-// Код оставлен таким же, как в рабочем варианте.
+// ТЕПЕРЬ: если в поле model передан asst_..., используется Assistants API.
+// Иначе — как раньше, обычный chat.completions.
 // ---------------------------------------------------------------------------
 
 app.post("/blog", async (req, res) => {
@@ -452,7 +451,6 @@ app.post("/blog", async (req, res) => {
 
     const apiKeyForBlog =
       process.env.OPENAI_API_KEY_BLOG || process.env.OPENAI_API_KEY;
-
     if (!apiKeyForBlog) {
       return res.status(500).json({
         ok: false,
@@ -463,7 +461,21 @@ app.post("/blog", async (req, res) => {
 
     const blogClient = new OpenAI({ apiKey: apiKeyForBlog });
 
-    const model = body.model || process.env.MODEL_BLOG || "gpt-4o-mini";
+    // modelRaw — то, что пришло из плагина или из ENV
+    const modelRaw =
+      (typeof body.model === "string" && body.model.trim()) ||
+      process.env.MODEL_BLOG ||
+      "gpt-4o-mini";
+
+    let assistantIdForBlog = null;
+    let model = modelRaw;
+
+    // Если model начинается с "asst_" — считаем это ID ассистента
+    if (typeof modelRaw === "string" && modelRaw.trim().startsWith("asst_")) {
+      assistantIdForBlog = modelRaw.trim();
+      // Для fallback через chat.completions используем MODEL_BLOG или дефолт
+      model = process.env.MODEL_BLOG || "gpt-4o-mini";
+    }
 
     // 1. messages из тела запроса (как в старом варианте)
     let messages = Array.isArray(body.messages) ? body.messages : null;
@@ -490,17 +502,107 @@ app.post("/blog", async (req, res) => {
       });
     }
 
-    const completion = await blogClient.chat.completions.create({
-      model,
-      messages,
-      temperature:
-        typeof body.temperature === "number" ? body.temperature : 0.6,
-      max_tokens:
-        typeof body.max_tokens === "number" ? body.max_tokens : 3500,
-    });
+    // Вспомогательная функция: вытащить текст из content в разных форматах
+    const extractTextFromContent = (c) => {
+      if (typeof c === "string") return c;
+      if (Array.isArray(c)) {
+        return c
+          .map((part) => {
+            if (typeof part === "string") return part;
+            if (part && typeof part.text === "string") return part.text;
+            if (part && typeof part.value === "string") return part.value;
+            if (
+              part &&
+              part.type === "input_text" &&
+              typeof part.text === "string"
+            ) {
+              return part.text;
+            }
+            return "";
+          })
+          .filter(Boolean)
+          .join("\n");
+      }
+      if (c && typeof c === "object" && typeof c.text === "string") {
+        return c.text;
+      }
+      return "";
+    };
 
-    let content =
-      completion.choices?.[0]?.message?.content?.trim() || "";
+    let content = "";
+
+    // ---------- Попытка 1: Assistants API, если передан asst_... ----------
+    if (assistantIdForBlog) {
+      try {
+        const thread = await blogClient.beta.threads.create();
+
+        // Обычно messages один, но на всякий случай проходим по всем
+        for (const msg of messages) {
+          const role = msg.role === "assistant" ? "assistant" : "user";
+          const text = extractTextFromContent(msg.content);
+          const trimmed = (text || "").trim();
+          if (!trimmed) continue;
+
+          await blogClient.beta.threads.messages.create(thread.id, {
+            role,
+            content: trimmed,
+          });
+        }
+
+        let run = await blogClient.beta.threads.runs.create(thread.id, {
+          assistant_id: assistantIdForBlog,
+        });
+
+        while (
+          run.status === "queued" ||
+          run.status === "in_progress" ||
+          run.status === "cancelling"
+        ) {
+          await new Promise((r) => setTimeout(r, 1000));
+          run = await blogClient.beta.threads.runs.retrieve(thread.id, run.id);
+        }
+
+        if (run.status !== "completed") {
+          throw new Error("Ассистент не завершил ответ. Статус: " + run.status);
+        }
+
+        const msgList = await blogClient.beta.threads.messages.list(thread.id, {
+          limit: 10,
+        });
+
+        const assistantMessages = msgList.data.filter(
+          (m) => m.role === "assistant"
+        );
+        if (!assistantMessages.length) {
+          throw new Error("Ассистент не вернул сообщений.");
+        }
+
+        const m = assistantMessages[0];
+        const textParts = (m.content || [])
+          .filter((part) => part.type === "text")
+          .map((part) => part.text.value);
+
+        content = textParts.join("\n").trim();
+      } catch (e) {
+        console.error("Ошибка Assistants API в /blog, выполняем fallback:", e);
+        content = "";
+      }
+    }
+
+    // ---------- Попытка 2: обычный Chat Completions (как раньше) ----------
+    if (!content) {
+      const completion = await blogClient.chat.completions.create({
+        model,
+        messages,
+        temperature:
+          typeof body.temperature === "number" ? body.temperature : 0.6,
+        max_tokens:
+          typeof body.max_tokens === "number" ? body.max_tokens : 3500,
+      });
+
+      content =
+        completion.choices?.[0]?.message?.content?.trim() || "";
+    }
 
     if (!content) {
       return res.status(500).json({
